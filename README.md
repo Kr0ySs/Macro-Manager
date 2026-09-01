@@ -1,4 +1,4 @@
-# Macro
+# MacroManager
 
 A simple application for creating custom text shortcuts.
 
@@ -16,7 +16,7 @@ Type a command such as `.wpp` into any text field, and Macro will automatically 
 
 ## How to Use
 
-1. Download `Macro.exe` from the Releases page.
+1. Download `MacroManager.exe` from the Releases page.
 2. Open the application.
 3. Create a new macro.
 4. Set a shortcut, for example:
