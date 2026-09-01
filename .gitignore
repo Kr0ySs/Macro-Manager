@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Local Files
+macros.json
+
+# IDE
+.vscode/
+.idea/
