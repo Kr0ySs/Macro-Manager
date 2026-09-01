@@ -1,4 +1,4 @@
-# MacroManager
+# MacroManager.
 
 A simple application for creating custom text shortcuts.
 
