@@ -1,4 +1,5 @@
 import sys
+import ctypes
 import customtkinter as ctk
 import keyboard
 import winsound
@@ -17,27 +18,103 @@ import pyperclip
 
 APP_NAME = "Macro"
 MACROS_FILE = "macros.json"
+SETTINGS_FILE = "settings.json"
+
+# Windows single-instance settings
+MUTEX_NAME = "Local\\MacroSingleInstanceMutex"
+ERROR_ALREADY_EXISTS = 183
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 
 # =========================================================
-# Macro Management
+# Single Instance
 # =========================================================
 
-def get_macros_path():
+mutex_handle = None
+
+
+def bring_existing_instance_to_front():
+    """Find and show the existing Macro window."""
+    user32 = ctypes.windll.user32
+
+    # Give the first instance a short moment to finish creating its window.
+    for _ in range(10):
+        hwnd = user32.FindWindowW(None, APP_NAME)
+
+        if hwnd:
+            # Show the window even if it is hidden/minimized.
+            user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            user32.SetForegroundWindow(hwnd)
+            return True
+
+        time.sleep(0.1)
+
+    return False
+
+
+def acquire_single_instance():
+    """Allow only one running instance of Macro."""
+    global mutex_handle
+
+    kernel32 = ctypes.windll.kernel32
+
+    mutex_handle = kernel32.CreateMutexW(
+        None,
+        False,
+        MUTEX_NAME
+    )
+
+    if not mutex_handle:
+        return True
+
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        bring_existing_instance_to_front()
+        kernel32.CloseHandle(mutex_handle)
+        mutex_handle = None
+        return False
+
+    return True
+
+
+def release_single_instance():
+    """Release the application mutex."""
+    global mutex_handle
+
+    if mutex_handle:
+        ctypes.windll.kernel32.CloseHandle(mutex_handle)
+        mutex_handle = None
+
+
+# =========================================================
+# File Paths
+# =========================================================
+
+def get_app_directory():
     if getattr(sys, "frozen", False):
-        base_path = os.path.dirname(sys.executable)
+        return os.path.dirname(sys.executable)
 
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(os.path.abspath(__file__))
 
+
+def get_macros_path():
     return os.path.join(
-        base_path,
+        get_app_directory(),
         MACROS_FILE
     )
 
+
+def get_settings_path():
+    return os.path.join(
+        get_app_directory(),
+        SETTINGS_FILE
+    )
+
+
+# =========================================================
+# Macro Management
+# =========================================================
 
 def load_macros():
     path = get_macros_path()
@@ -45,6 +122,7 @@ def load_macros():
     if not os.path.exists(path):
         with open(path, "w", encoding="utf-8") as file:
             json.dump({}, file, indent=4, ensure_ascii=False)
+
         return {}
 
     try:
@@ -69,6 +147,64 @@ def save_macros():
 
 
 macros = load_macros()
+
+
+# =========================================================
+# Application Settings
+# =========================================================
+
+def load_settings():
+    path = get_settings_path()
+
+    if not os.path.exists(path):
+        default_settings = {
+            "auto_enter": False
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(
+                    default_settings,
+                    file,
+                    indent=4
+                )
+        except Exception as error:
+            print(f"Error creating settings file: {error}")
+
+        return default_settings
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            settings = json.load(file)
+
+        if not isinstance(settings, dict):
+            return {"auto_enter": False}
+
+        settings.setdefault("auto_enter", False)
+
+        return settings
+
+    except Exception as error:
+        print(f"Error loading settings: {error}")
+        return {"auto_enter": False}
+
+
+def save_settings():
+    path = get_settings_path()
+
+    try:
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(
+                settings,
+                file,
+                indent=4
+            )
+
+    except Exception as error:
+        print(f"Error saving settings: {error}")
+
+
+settings = load_settings()
 
 
 # =========================================================
@@ -97,7 +233,6 @@ def on_key(event):
     with buffer_lock:
 
         if len(event.name) == 1:
-
             buffer += event.name
 
             if len(buffer) > 150:
@@ -106,7 +241,6 @@ def on_key(event):
             for trigger, content in list(macros.items()):
 
                 if buffer.endswith(trigger):
-
                     print(f"Macro Detected: {trigger}")
 
                     threading.Thread(
@@ -116,14 +250,12 @@ def on_key(event):
                     ).start()
 
                     buffer = ""
-
                     break
 
         elif event.name == "space":
             buffer += " "
 
         elif event.name == "backspace":
-
             if buffer:
                 buffer = buffer[:-1]
 
@@ -137,11 +269,9 @@ def on_key(event):
 
 def execute_macro(trigger, content):
     """Execute a macro."""
-
     global is_executing_macro
 
     try:
-
         is_executing_macro = True
 
         time.sleep(0.05)
@@ -161,7 +291,6 @@ def execute_macro(trigger, content):
         # =================================================
 
         try:
-
             old_clipboard = pyperclip.paste()
 
             pyperclip.copy(content)
@@ -170,14 +299,26 @@ def execute_macro(trigger, content):
 
             time.sleep(0.2)
 
+            # =================================================
+            # Automatic Enter
+            # =================================================
+
+            if settings.get("auto_enter", False):
+                time.sleep(0.05)
+                keyboard.press_and_release("enter")
+                time.sleep(0.05)
+
             pyperclip.copy(old_clipboard)
 
         except Exception as error:
-
             print(f"Error using clipboard: {error}")
 
             # Fallback
             keyboard.write(content)
+
+            if settings.get("auto_enter", False):
+                time.sleep(0.05)
+                keyboard.press_and_release("enter")
 
         # =================================================
         # Sound
@@ -263,7 +404,9 @@ class MacroApp(ctk.CTk):
             weight=1
         )
 
+        # -------------------------------------------------
         # Title
+        # -------------------------------------------------
 
         title_frame = ctk.CTkFrame(
             header,
@@ -297,7 +440,9 @@ class MacroApp(ctk.CTk):
             anchor="w"
         )
 
+        # -------------------------------------------------
         # Status
+        # -------------------------------------------------
 
         self.status_label = ctk.CTkLabel(
             header,
@@ -336,7 +481,9 @@ class MacroApp(ctk.CTk):
             weight=1
         )
 
-        # Novo Macro
+        # -------------------------------------------------
+        # New Macro
+        # -------------------------------------------------
 
         add_button = ctk.CTkButton(
             toolbar,
@@ -347,11 +494,13 @@ class MacroApp(ctk.CTk):
         add_button.grid(
             row=0,
             column=0,
-            padx=20,
+            padx=(20, 10),
             pady=12
         )
 
-        # Pesquisa
+        # -------------------------------------------------
+        # Search
+        # -------------------------------------------------
 
         self.search_entry = ctk.CTkEntry(
             toolbar,
@@ -361,7 +510,7 @@ class MacroApp(ctk.CTk):
         self.search_entry.grid(
             row=0,
             column=1,
-            padx=20,
+            padx=10,
             pady=12,
             sticky="ew"
         )
@@ -371,7 +520,27 @@ class MacroApp(ctk.CTk):
             lambda event: self.refresh_macros()
         )
 
-        # Botão Ativar / Desativar
+        # -------------------------------------------------
+        # Settings
+        # -------------------------------------------------
+
+        settings_button = ctk.CTkButton(
+            toolbar,
+            text="Settings",
+            width=85,
+            command=self.open_settings
+        )
+
+        settings_button.grid(
+            row=0,
+            column=2,
+            padx=5,
+            pady=12
+        )
+
+        # -------------------------------------------------
+        # Activate / Deactivate
+        # -------------------------------------------------
 
         self.toggle_button = ctk.CTkButton(
             toolbar,
@@ -383,8 +552,8 @@ class MacroApp(ctk.CTk):
 
         self.toggle_button.grid(
             row=0,
-            column=2,
-            padx=20,
+            column=3,
+            padx=(5, 20),
             pady=12
         )
 
@@ -426,7 +595,10 @@ class MacroApp(ctk.CTk):
             pady=(0, 10)
         )
 
+        # -------------------------------------------------
         # Load Macros
+        # -------------------------------------------------
+
         self.refresh_macros()
 
     # =====================================================
@@ -454,7 +626,9 @@ class MacroApp(ctk.CTk):
 
             count += 1
 
+            # -------------------------------------------------
             # Card
+            # -------------------------------------------------
 
             card = ctk.CTkFrame(
                 self.scroll_frame,
@@ -474,7 +648,9 @@ class MacroApp(ctk.CTk):
                 weight=1
             )
 
+            # -------------------------------------------------
             # Trigger
+            # -------------------------------------------------
 
             trigger_label = ctk.CTkLabel(
                 card,
@@ -494,7 +670,9 @@ class MacroApp(ctk.CTk):
                 sticky="w"
             )
 
+            # -------------------------------------------------
             # Preview
+            # -------------------------------------------------
 
             preview = content.replace(
                 "\n",
@@ -519,7 +697,9 @@ class MacroApp(ctk.CTk):
                 sticky="ew"
             )
 
-            # Editar
+            # -------------------------------------------------
+            # Edit
+            # -------------------------------------------------
 
             edit_button = ctk.CTkButton(
                 card,
@@ -536,7 +716,9 @@ class MacroApp(ctk.CTk):
                 pady=15
             )
 
+            # -------------------------------------------------
             # Erase
+            # -------------------------------------------------
 
             delete_button = ctk.CTkButton(
                 card,
@@ -556,7 +738,6 @@ class MacroApp(ctk.CTk):
             )
 
         # Update Counter
-
         self.footer.configure(
             text=f"{len(macros)} set up macros"
         )
@@ -566,7 +747,6 @@ class MacroApp(ctk.CTk):
     # =====================================================
 
     def open_add_macro(self):
-
         self.open_macro_window()
 
     # =====================================================
@@ -574,7 +754,6 @@ class MacroApp(ctk.CTk):
     # =====================================================
 
     def open_edit_macro(self, trigger):
-
         self.open_macro_window(
             old_trigger=trigger,
             trigger=trigger,
@@ -690,15 +869,13 @@ class MacroApp(ctk.CTk):
             )
 
             # Simple Check
-
             if not new_trigger:
                 return
 
             if not new_content:
                 return
 
-            # Remove old if name changed
-
+            # Remove old if shortcut changed
             if (
                 old_trigger
                 and old_trigger != new_trigger
@@ -709,7 +886,6 @@ class MacroApp(ctk.CTk):
                 )
 
             # Save Macro
-
             macros[new_trigger] = new_content
 
             save_macros()
@@ -726,6 +902,114 @@ class MacroApp(ctk.CTk):
 
         save_button.pack(
             pady=20
+        )
+
+    # =====================================================
+    # Settings Window
+    # =====================================================
+
+    def open_settings(self):
+
+        window = ctk.CTkToplevel(self)
+
+        window.title("Settings")
+
+        window.geometry("500x300")
+
+        window.resizable(
+            False,
+            False
+        )
+
+        window.grab_set()
+
+        # -------------------------------------------------
+        # Title
+        # -------------------------------------------------
+
+        ctk.CTkLabel(
+            window,
+            text="Application Settings",
+            font=ctk.CTkFont(
+                size=20,
+                weight="bold"
+            )
+        ).pack(
+            anchor="w",
+            padx=25,
+            pady=(25, 5)
+        )
+
+        ctk.CTkLabel(
+            window,
+            text="Configure how Macro behaves after executing a shortcut.",
+            text_color="gray"
+        ).pack(
+            anchor="w",
+            padx=25,
+            pady=(0, 20)
+        )
+
+        # -------------------------------------------------
+        # Auto Enter
+        # -------------------------------------------------
+
+        auto_enter_var = ctk.BooleanVar(
+            value=settings.get(
+                "auto_enter",
+                False
+            )
+        )
+
+        auto_enter_switch = ctk.CTkSwitch(
+            window,
+            text="Press ENTER automatically after executing a macro",
+            variable=auto_enter_var
+        )
+
+        auto_enter_switch.pack(
+            anchor="w",
+            padx=25,
+            pady=10
+        )
+
+        ctk.CTkLabel(
+            window,
+            text=(
+                "When enabled, Macro will press ENTER immediately "
+                "after inserting the macro content."
+            ),
+            text_color="gray",
+            wraplength=440,
+            justify="left"
+        ).pack(
+            anchor="w",
+            padx=25,
+            pady=(0, 20)
+        )
+
+        # -------------------------------------------------
+        # Save Settings
+        # -------------------------------------------------
+
+        def save_settings_from_window():
+
+            settings["auto_enter"] = bool(
+                auto_enter_var.get()
+            )
+
+            save_settings()
+
+            window.destroy()
+
+        save_button = ctk.CTkButton(
+            window,
+            text="Save Settings",
+            command=save_settings_from_window
+        )
+
+        save_button.pack(
+            pady=10
         )
 
     # =====================================================
@@ -782,7 +1066,6 @@ class MacroApp(ctk.CTk):
     # =====================================================
 
     def hide_window(self):
-
         self.withdraw()
 
     # =====================================================
@@ -797,6 +1080,36 @@ class MacroApp(ctk.CTk):
 
         self.focus_force()
 
+        # Force the window to the foreground on Windows.
+        try:
+            hwnd = self.winfo_id()
+
+            ctypes.windll.user32.ShowWindow(
+                hwnd,
+                5
+            )
+
+            ctypes.windll.user32.SetForegroundWindow(
+                hwnd
+            )
+
+        except Exception as error:
+            print(
+                f"Error bringing window to front: {error}"
+            )
+
+    # =====================================================
+    # Exit
+    # =====================================================
+
+    def quit_application(self):
+
+        keyboard.unhook_all()
+
+        release_single_instance()
+
+        self.destroy()
+
 
 # =========================================================
 # System Tray
@@ -805,7 +1118,6 @@ class MacroApp(ctk.CTk):
 def create_tray_icon(app):
 
     # Create Temp Icon
-
     image = Image.new(
         "RGB",
         (64, 64),
@@ -849,11 +1161,9 @@ def create_tray_icon(app):
 
         icon.stop()
 
-        keyboard.unhook_all()
-
         app.after(
             0,
-            app.destroy
+            app.quit_application
         )
 
     # -----------------------------------------------------
@@ -900,13 +1210,29 @@ def create_tray_icon(app):
 
 if __name__ == "__main__":
 
+    # -----------------------------------------------------
+    # Single Instance Check
+    # -----------------------------------------------------
+
+    if not acquire_single_instance():
+        sys.exit(0)
+
+    # -----------------------------------------------------
     # Global Hook
+    # -----------------------------------------------------
+
     keyboard.hook(on_key)
 
+    # -----------------------------------------------------
     # Create App
+    # -----------------------------------------------------
+
     app = MacroApp()
 
+    # -----------------------------------------------------
     # System Tray
+    # -----------------------------------------------------
+
     tray_thread = threading.Thread(
         target=create_tray_icon,
         args=(app,),
@@ -915,5 +1241,13 @@ if __name__ == "__main__":
 
     tray_thread.start()
 
+    # -----------------------------------------------------
     # Main Interface
-    app.mainloop()
+    # -----------------------------------------------------
+
+    try:
+        app.mainloop()
+
+    finally:
+        keyboard.unhook_all()
+        release_single_instance()
