@@ -10,15 +10,17 @@ import time
 import pystray
 from PIL import Image, ImageDraw
 import pyperclip
+from tkinter import filedialog
 
 
 # =========================================================
 # Settings
 # =========================================================
 
-APP_NAME = "Macro"
+APP_NAME = "MacroManager"
 MACROS_FILE = "macros.json"
 SETTINGS_FILE = "settings.json"
+ICON_FILE = "icon.ico"
 
 # Windows single-instance settings
 MUTEX_NAME = "Local\\MacroSingleInstanceMutex"
@@ -112,6 +114,13 @@ def get_settings_path():
     )
 
 
+def get_icon_path():
+    return os.path.join(
+        get_app_directory(),
+        ICON_FILE
+    )
+
+
 # =========================================================
 # Macro Management
 # =========================================================
@@ -158,7 +167,9 @@ def load_settings():
 
     if not os.path.exists(path):
         default_settings = {
-            "auto_enter": False
+            "auto_enter": False,
+            "sound_enabled": True,
+            "custom_sfx": ""
         }
 
         try:
@@ -178,15 +189,25 @@ def load_settings():
             settings = json.load(file)
 
         if not isinstance(settings, dict):
-            return {"auto_enter": False}
+            return {
+                "auto_enter": False,
+                "sound_enabled": True,
+                "custom_sfx": ""
+            }
 
         settings.setdefault("auto_enter", False)
+        settings.setdefault("sound_enabled", True)
+        settings.setdefault("custom_sfx", "")
 
         return settings
 
     except Exception as error:
         print(f"Error loading settings: {error}")
-        return {"auto_enter": False}
+        return {
+            "auto_enter": False,
+            "sound_enabled": True,
+            "custom_sfx": ""
+        }
 
 
 def save_settings():
@@ -324,9 +345,21 @@ def execute_macro(trigger, content):
         # Sound
         # =================================================
 
-        winsound.MessageBeep(
-            winsound.MB_OK
-        )
+        if settings.get("sound_enabled", True):
+            custom_sfx = settings.get("custom_sfx", "").strip()
+
+            try:
+                if custom_sfx and os.path.isfile(custom_sfx):
+                    winsound.PlaySound(
+                        custom_sfx,
+                        winsound.SND_FILENAME | winsound.SND_ASYNC
+                    )
+                else:
+                    winsound.MessageBeep(
+                        winsound.MB_OK
+                    )
+            except Exception as error:
+                print(f"Error playing sound: {error}")
 
     except Exception as error:
 
@@ -362,6 +395,13 @@ class MacroApp(ctk.CTk):
             700,
             500
         )
+
+        icon_path = get_icon_path()
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception as error:
+                print(f"Error loading application icon: {error}")
 
         # Close Window = Minimize to tray
         self.protocol(
@@ -913,9 +953,7 @@ class MacroApp(ctk.CTk):
         window = ctk.CTkToplevel(self)
 
         window.title("Settings")
-
-        window.geometry("500x300")
-
+        window.geometry("500x450")
         window.resizable(
             False,
             False
@@ -985,7 +1023,118 @@ class MacroApp(ctk.CTk):
         ).pack(
             anchor="w",
             padx=25,
-            pady=(0, 20)
+            pady=(0, 15)
+        )
+
+        # -------------------------------------------------
+        # Sound Effects
+        # -------------------------------------------------
+
+        sound_enabled_var = ctk.BooleanVar(
+            value=settings.get(
+                "sound_enabled",
+                True
+            )
+        )
+
+        ctk.CTkSwitch(
+            window,
+            text="Enable sound effects",
+            variable=sound_enabled_var
+        ).pack(
+            anchor="w",
+            padx=25,
+            pady=10
+        )
+
+        ctk.CTkLabel(
+            window,
+            text="Play a sound whenever a macro is executed.",
+            text_color="gray"
+        ).pack(
+            anchor="w",
+            padx=25,
+            pady=(0, 10)
+        )
+
+        ctk.CTkLabel(
+            window,
+            text="Custom SFX",
+            font=ctk.CTkFont(
+                size=14,
+                weight="bold"
+            )
+        ).pack(
+            anchor="w",
+            padx=25,
+            pady=(5, 5)
+        )
+
+        sfx_frame = ctk.CTkFrame(
+            window,
+            fg_color="transparent"
+        )
+
+        sfx_frame.pack(
+            fill="x",
+            padx=25
+        )
+
+        sfx_entry = ctk.CTkEntry(
+            sfx_frame,
+            placeholder_text="Default Windows sound"
+        )
+
+        sfx_entry.pack(
+            side="left",
+            fill="x",
+            expand=True
+        )
+
+        current_sfx = settings.get("custom_sfx", "")
+        if current_sfx:
+            sfx_entry.insert(0, current_sfx)
+
+        def browse_sfx():
+
+            path = filedialog.askopenfilename(
+                title="Select Sound Effect",
+                filetypes=[
+                    ("WAV files", "*.wav"),
+                    ("All files", "*.*")
+                ]
+            )
+
+            if path:
+                sfx_entry.delete(
+                    0,
+                    "end"
+                )
+                sfx_entry.insert(
+                    0,
+                    path
+                )
+
+        ctk.CTkButton(
+            sfx_frame,
+            text="Browse",
+            width=80,
+            command=browse_sfx
+        ).pack(
+            side="left",
+            padx=(8, 0)
+        )
+
+        ctk.CTkLabel(
+            window,
+            text="Leave empty to use the default Windows notification sound.",
+            text_color="gray",
+            wraplength=440,
+            justify="left"
+        ).pack(
+            anchor="w",
+            padx=25,
+            pady=(5, 15)
         )
 
         # -------------------------------------------------
@@ -997,6 +1146,12 @@ class MacroApp(ctk.CTk):
             settings["auto_enter"] = bool(
                 auto_enter_var.get()
             )
+
+            settings["sound_enabled"] = bool(
+                sound_enabled_var.get()
+            )
+
+            settings["custom_sfx"] = sfx_entry.get().strip()
 
             save_settings()
 
@@ -1011,6 +1166,7 @@ class MacroApp(ctk.CTk):
         save_button.pack(
             pady=10
         )
+
 
     # =====================================================
     # Erase
@@ -1117,19 +1273,35 @@ class MacroApp(ctk.CTk):
 
 def create_tray_icon(app):
 
-    # Create Temp Icon
-    image = Image.new(
-        "RGB",
-        (64, 64),
-        "#202020"
-    )
+    # -----------------------------------------------------
+    # Tray Icon
+    # -----------------------------------------------------
 
-    draw = ImageDraw.Draw(image)
+    icon_path = get_icon_path()
 
-    draw.rectangle(
-        (15, 15, 49, 49),
-        fill="#4DA3FF"
-    )
+    if os.path.exists(icon_path):
+        try:
+            image = Image.open(icon_path).convert("RGBA")
+        except Exception as error:
+            print(f"Error loading tray icon: {error}")
+            image = Image.new(
+                "RGBA",
+                (64, 64),
+                "#202020"
+            )
+    else:
+        image = Image.new(
+            "RGBA",
+            (64, 64),
+            "#202020"
+        )
+
+        draw = ImageDraw.Draw(image)
+
+        draw.rectangle(
+            (15, 15, 49, 49),
+            fill="#4DA3FF"
+        )
 
     # -----------------------------------------------------
     # Open
