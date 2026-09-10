@@ -35,4 +35,4 @@ That's it. Whenever `.wpp` is typed, the text will be replaced automatically.
 
 ## Current Version
 
-v1.0.0
+v1.2.0
