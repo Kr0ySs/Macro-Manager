@@ -10,7 +10,12 @@ import time
 import pystray
 from PIL import Image, ImageDraw
 import pyperclip
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
+from urllib.request import Request, urlopen
+import tempfile
+import subprocess
+import webbrowser
+import re
 
 
 # =========================================================
@@ -18,6 +23,10 @@ from tkinter import filedialog
 # =========================================================
 
 APP_NAME = "MacroManager"
+APP_VERSION = "1.3.0"
+GITHUB_REPO = "Kr0ySs/Macro-Manager"
+GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 MACROS_FILE = "macros.json"
 SETTINGS_FILE = "settings.json"
 ICON_FILE = "icon.ico"
@@ -119,6 +128,196 @@ def get_icon_path():
         get_app_directory(),
         ICON_FILE
     )
+
+
+# =========================================================
+# GitHub Auto-Updater
+# =========================================================
+
+def parse_version(version):
+    """Convert versions such as v1.2.3 into comparable integer tuples."""
+    numbers = re.findall(r"\\d+", str(version))
+    return tuple(int(number) for number in numbers) if numbers else (0,)
+
+
+def get_latest_release():
+    """Fetch the latest published GitHub release."""
+    request = Request(
+        GITHUB_LATEST_RELEASE_API,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": APP_NAME}
+    )
+    with urlopen(request, timeout=8) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def download_release_asset(asset_url, destination):
+    """Download the release executable to a temporary file."""
+    request = Request(asset_url, headers={"User-Agent": APP_NAME})
+    with urlopen(request, timeout=30) as response, open(destination, "wb") as output:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            output.write(chunk)
+
+
+def install_executable_update(downloaded_exe):
+    """Replace the running executable after this process exits (Windows packaged build)."""
+    current_exe = os.path.abspath(sys.executable)
+    app_dir = os.path.dirname(current_exe)
+    helper_path = os.path.join(tempfile.gettempdir(), "macromanager_update.bat")
+    pid = os.getpid()
+
+    batch_script = f"""@echo off
+setlocal
+set "APP_PID={pid}"
+set "SOURCE={downloaded_exe}"
+set "TARGET={current_exe}"
+:wait_for_app
+tasklist /FI "PID eq %APP_PID%" 2>NUL | find "%APP_PID%" >NUL
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >NUL
+    goto wait_for_app
+)
+copy /Y "%SOURCE%" "%TARGET%" >NUL
+if errorlevel 1 (
+    del "%SOURCE%" >NUL 2>&1
+    del "%~f0"
+    exit /b 1
+)
+start "" "%TARGET%"
+del "%SOURCE%" >NUL 2>&1
+del "%~f0"
+"""
+    with open(helper_path, "w", encoding="utf-8") as file:
+        file.write(batch_script)
+
+    subprocess.Popen(
+        ["cmd.exe", "/c", helper_path],
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        close_fds=True
+    )
+
+
+def check_for_updates(app, manual=False):
+    """Check GitHub releases without freezing the GUI."""
+    def worker():
+        try:
+            release = get_latest_release()
+            tag_name = release.get("tag_name", "")
+            latest_version = parse_version(tag_name)
+
+            if latest_version <= parse_version(APP_VERSION):
+                if manual:
+                    app.after(0, lambda: messagebox.showinfo(
+                        "MacroManager",
+                        f"You are using the latest version ({APP_VERSION}).",
+                        parent=app
+                    ))
+                return
+
+            assets = release.get("assets", [])
+            executable_asset = next((
+                asset for asset in assets
+                if asset.get("name", "").lower().endswith(".exe")
+                and asset.get("browser_download_url")
+            ), None)
+
+            def offer_update():
+                if not getattr(sys, "frozen", False):
+                    messagebox.showinfo(
+                        "Update available",
+                        f"MacroManager {tag_name} is available, but automatic installation "
+                        "only works in the packaged .exe version. The release page will open.",
+                        parent=app
+                    )
+                    webbrowser.open(release.get("html_url", GITHUB_RELEASES_URL))
+                    return
+
+                if not executable_asset:
+                    if messagebox.askyesno(
+                        "Update available",
+                        f"MacroManager {tag_name} is available, but the release has no .exe asset. "
+                        "Open the GitHub release page?",
+                        parent=app
+                    ):
+                        webbrowser.open(release.get("html_url", GITHUB_RELEASES_URL))
+                    return
+
+                if not messagebox.askyesno(
+                    "Update available",
+                    f"A new version of MacroManager is available.\\n\\n"
+                    f"Installed: {APP_VERSION}\\nLatest: {tag_name}\\n\\n"
+                    "Download and install it now? MacroManager will restart.",
+                    parent=app
+                ):
+                    return
+
+                status = ctk.CTkToplevel(app)
+                status.title("Updating MacroManager")
+                status.geometry("360x110")
+                status.resizable(False, False)
+                ctk.CTkLabel(
+                    status,
+                    text="Downloading update...\\nPlease keep MacroManager open.",
+                    justify="center"
+                ).pack(expand=True, padx=20, pady=20)
+                status.transient(app)
+                status.grab_set()
+
+                def download_worker():
+                    temp_exe = os.path.join(
+                        tempfile.gettempdir(),
+                        f"MacroManager_update_{os.getpid()}.exe"
+                    )
+                    try:
+                        download_release_asset(executable_asset["browser_download_url"], temp_exe)
+                        if not os.path.isfile(temp_exe) or os.path.getsize(temp_exe) < 100_000:
+                            raise RuntimeError("The downloaded executable is missing or too small.")
+
+                        def finish_update():
+                            try:
+                                status.grab_release()
+                                status.destroy()
+                                install_executable_update(temp_exe)
+                                app.quit_application()
+                            except Exception as error:
+                                if os.path.exists(temp_exe):
+                                    os.remove(temp_exe)
+                                messagebox.showerror(
+                                    "Update failed", f"Could not start the updater:\\n{error}", parent=app
+                                )
+                        app.after(0, finish_update)
+                    except Exception as error:
+                        if os.path.exists(temp_exe):
+                            try:
+                                os.remove(temp_exe)
+                            except OSError:
+                                pass
+
+                        def show_error():
+                            if status.winfo_exists():
+                                status.grab_release()
+                                status.destroy()
+                            messagebox.showerror(
+                                "Update failed", f"Could not download the update:\\n{error}", parent=app
+                            )
+                        app.after(0, show_error)
+
+                threading.Thread(target=download_worker, daemon=True).start()
+
+            app.after(0, offer_update)
+
+        except Exception as error:
+            print(f"Error checking for updates: {error}")
+            if manual:
+                app.after(0, lambda err=str(error): messagebox.showerror(
+                    "Update check failed",
+                    f"Could not check GitHub for updates:\\n{err}",
+                    parent=app
+                ))
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 # =========================================================
@@ -582,6 +781,20 @@ class MacroApp(ctk.CTk):
         # Activate / Deactivate
         # -------------------------------------------------
 
+        update_button = ctk.CTkButton(
+            toolbar,
+            text="Check Updates",
+            width=105,
+            command=lambda: check_for_updates(self, manual=True)
+        )
+
+        update_button.grid(
+            row=0,
+            column=3,
+            padx=5,
+            pady=12
+        )
+
         self.toggle_button = ctk.CTkButton(
             toolbar,
             text="Deactivate",
@@ -592,7 +805,7 @@ class MacroApp(ctk.CTk):
 
         self.toggle_button.grid(
             row=0,
-            column=3,
+            column=4,
             padx=(5, 20),
             pady=12
         )
@@ -1400,6 +1613,10 @@ if __name__ == "__main__":
     # -----------------------------------------------------
 
     app = MacroApp()
+
+    # Packaged builds check GitHub automatically; source runs can use the manual button.
+    if getattr(sys, "frozen", False):
+        app.after(1500, lambda: check_for_updates(app))
 
     # -----------------------------------------------------
     # System Tray
