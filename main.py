@@ -783,7 +783,7 @@ class MacroApp(ctk.CTk):
 
         update_button = ctk.CTkButton(
             toolbar,
-            text="Check Updates",
+            text="Check For Updates",
             width=105,
             command=lambda: check_for_updates(self, manual=True)
         )
